@@ -1,12 +1,4 @@
-# ==============================================================================
-# Michiko Kernel - Automated Build Workflow
-# Target    : Redmi Note 9 Pro (miatoll)
-# Branch    : lineage-23.2
-# Runner    : ubuntu-24.04
-# Toolchain : FoxeClang v23.0 + FoxGCC ARM32 v17.0
-# ==============================================================================
-
-name: SuperPotato Kernel
+name: komo Kernel
 
 on:
   push:
@@ -60,16 +52,14 @@ jobs:
       GCC32_DIR: ${{ github.workspace }}/toolchain/gcc32
       AK3_DIR: ${{ github.workspace }}/AnyKernel3
       KERNEL_DIR: ${{ github.workspace }}/kernel-source
-      KERNEL_NAME: SuperPotato
+      KERNEL_NAME: komo
+      KERNEL_LOCALVERSION: "-komo"
       TARGET_DEVICE: "Redmi Note 9 Pro (miatoll)"
       DEFCONFIG: vendor/xiaomi/miatoll_defconfig
-      TG_CHAT_ID: "-1003641667794"
-      TG_THREAD_ID: "4123"
+      TG_CHAT_ID: ""
+      TG_THREAD_ID: ""
 
     steps:
-      # --------------------------------------------------------------------
-      # 0. Inject GH_PAT
-      # --------------------------------------------------------------------
       - name: Configure git credentials
         run: |
           git config --global credential.helper store
@@ -78,9 +68,6 @@ jobs:
           git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf \
             "https://github.com/"
 
-      # --------------------------------------------------------------------
-      # 1. Checkout kernel source
-      # --------------------------------------------------------------------
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
@@ -90,22 +77,16 @@ jobs:
           fetch-depth: 5
           path: kernel-source
 
-      # --------------------------------------------------------------
-      # 1.5 Checkout Misc
-      # --------------------------------------------------------------
       - name: Implant NoMount
         run: |
           cd "$KERNEL_DIR"
           curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
 
-      - name: Setup KernelSU
+      - name: Setup KernelSU-Next
         run: |
           cd "$KERNEL_DIR"
-          curl -LSs "https://raw.githubusercontent.com/manipvlator/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s mmain
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash
           
-      # --------------------------------------------------------------------
-      # 2. Install build dependencies
-      # --------------------------------------------------------------------
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
@@ -115,9 +96,6 @@ jobs:
             python3 python3-requests unzip xz-utils zstd ccache lz4 \
             rsync flex dwarves make libdw-dev pkg-config device-tree-compiler
 
-      # --------------------------------------------------------------------
-      # 3. Restore FoxeClang cache
-      # --------------------------------------------------------------------
       - name: Restore FoxeClang cache
         id: cache-clang
         uses: actions/cache@v4
@@ -135,9 +113,6 @@ jobs:
             -C "$CLANG_DIR" --strip-components=1
           rm -f foxe-clang.tar.zst
 
-      # --------------------------------------------------------------------
-      # 4. Restore FoxGCC ARM32 cache
-      # --------------------------------------------------------------------
       - name: Restore FoxGCC ARM32 cache
         id: cache-gcc32
         uses: actions/cache@v4
@@ -155,9 +130,6 @@ jobs:
             -C "$GCC32_DIR" --strip-components=1
           rm -f fox-gcc32.tar.zst
 
-      # --------------------------------------------------------------------
-      # 5. Validate toolchains
-      # --------------------------------------------------------------------
       - name: Validate toolchains
         run: |
           set -e
@@ -174,9 +146,6 @@ jobs:
             echo "GCC32  : $GCC32_BIN"
           fi
 
-      # --------------------------------------------------------------------
-      # 6. Restore and configure ccache
-      # --------------------------------------------------------------------
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -191,9 +160,6 @@ jobs:
           ccache --max-size=5G
           ccache --zero-stats
 
-      # --------------------------------------------------------------------
-      # 7. Resolve release tag
-      # --------------------------------------------------------------------
       - name: Resolve release tag
         run: |
           CUSTOM_TAG="${{ github.event.inputs.release_tag }}"
@@ -215,14 +181,13 @@ jobs:
           echo "Release tag : ${RELEASE_TAG}"
           echo "Release URL : ${RELEASE_URL}"
 
-      # --------------------------------------------------------------------
-      # 8. Build kernel
-      # --------------------------------------------------------------------
       - name: Build kernel
         run: |
-          echo "Device    : $TARGET_DEVICE"
-          echo "Defconfig : $DEFCONFIG"
-          echo "CPU cores : $(nproc --all)"
+          echo "Device         : $TARGET_DEVICE"
+          echo "Defconfig      : $DEFCONFIG"
+          echo "Kernel name    : $KERNEL_NAME"
+          echo "Local version  : $KERNEL_LOCALVERSION"
+          echo "CPU cores      : $(nproc --all)"
 
           if [[ ! -f "$KERNEL_DIR/buildci.sh" ]]; then
             echo "::error::buildci.sh tidak ditemukan di $KERNEL_DIR"
@@ -236,14 +201,13 @@ jobs:
 
           chmod +x "$KERNEL_DIR/buildci.sh"
           cd "$KERNEL_DIR"
-          bash buildci.sh
+          # Pass LOCALVERSION through the build environment so the resulting
+          # kernel release becomes, for example, 6.1.123-SuperPotato.
+          LOCALVERSION="$KERNEL_LOCALVERSION" bash buildci.sh
 
           # Catat waktu selesai build (hanya kompilasi, sebelum packaging)
           echo "BUILD_END=$(date +%s)" >> "$GITHUB_ENV"
 
-      # --------------------------------------------------------------------
-      # 9. Verify kernel output
-      # --------------------------------------------------------------------
       - name: Verify kernel output
         run: |
           IMAGE="$KERNEL_DIR/out/arch/arm64/boot/Image.gz"
@@ -253,18 +217,19 @@ jobs:
           fi
           echo "Kernel image : $(du -sh "$IMAGE" | cut -f1)"
 
-      # --------------------------------------------------------------------
-      # 10. Clone AnyKernel3
-      # --------------------------------------------------------------------
+          KERNEL_RELEASE="$(
+            make -C "$KERNEL_DIR" O="$KERNEL_DIR/out"               kernelrelease               ARCH="$ARCH"               LOCALVERSION="$KERNEL_LOCALVERSION"
+          )"
+
+          echo "Kernel release: $KERNEL_RELEASE"
+          echo "KERNEL_RELEASE=$KERNEL_RELEASE" >> "$GITHUB_ENV""
+
       - name: Clone AnyKernel3
         run: |
           git clone --depth=1 \
             https://github.com/Michikoextv2/AnyKernel3-miatoll.git \
             -b staging "$AK3_DIR"
 
-      # --------------------------------------------------------------------
-      # 11. Package kernel ZIP
-      # --------------------------------------------------------------------
       - name: Package kernel ZIP
         run: |
           ZIP_NAME="${KERNEL_NAME}-${DATE_TAG}.zip"
@@ -295,9 +260,6 @@ jobs:
           echo "ZIP_SIZE=${ZIP_SIZE}" >> "$GITHUB_ENV"
           echo "Packaged : ${ZIP_NAME} (${ZIP_SIZE})"
 
-      # --------------------------------------------------------------------
-      # 12. Generate release notes
-      # --------------------------------------------------------------------
       - name: Generate release notes
         run: |
           COMMIT_LOG=$(git -C "$KERNEL_DIR" log -5 \
@@ -311,7 +273,7 @@ jobs:
           fi
 
           cat > "${GITHUB_WORKSPACE}/release_notes.md" << EOF
-          ## SuperPotato-${DATE_TAG}
+          ## ${KERNEL_NAME}-${DATE_TAG}
 
           ### Device
           - **Target:** ${TARGET_DEVICE}
@@ -339,9 +301,6 @@ jobs:
           # Export Telegram
           echo "BUILD_DURATION=${BUILD_DURATION}" >> "$GITHUB_ENV"
 
-      # --------------------------------------------------------------------
-      # 13. Upload kernel ZIP as artifact
-      # --------------------------------------------------------------------
       - name: Upload kernel ZIP as artifact
         uses: actions/upload-artifact@v4
         with:
@@ -349,14 +308,11 @@ jobs:
           path: ${{ env.ZIP_PATH }}
           retention-days: 7
 
-      # --------------------------------------------------------------------
-      # 14. Create GitHub Release
-      # --------------------------------------------------------------------
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: "SuperPotato-${{ env.DATE_TAG }}"
+          name: "${{ env.KERNEL_NAME }}-${{ env.DATE_TAG }}"
           body_path: ${{ github.workspace }}/release_notes.md
           files: ${{ env.ZIP_PATH }}
           draft: false
@@ -364,9 +320,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # --------------------------------------------------------------------
-      # 15. Send to Telegram
-      # --------------------------------------------------------------------
       - name: Send to Telegram
         if: ${{ github.event.inputs.send_telegram != 'false' }}
         env:
@@ -419,9 +372,6 @@ jobs:
               sys.exit(1)
           PYEOF
 
-      # --------------------------------------------------------------------
-      # 16. Show ccache stats
-      # --------------------------------------------------------------------
       - name: Show ccache stats
         if: always()
         run: ccache --show-stats
