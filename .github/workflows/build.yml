@@ -91,10 +91,16 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ca-certificates cpio curl \
-            flex git jq libelf-dev libssl-dev \
-            python3 python3-requests unzip xz-utils zstd ccache lz4 \
-            rsync flex dwarves make libdw-dev pkg-config device-tree-compiler
+          bc bison build-essential ca-certificates cpio curl \
+          flex git jq libelf-dev libssl-dev \
+          python3 python3-requests unzip xz-utils zstd ccache lz4 \
+          rsync flex dwarves make libdw-dev pkg-config device-tree-compiler
+
+          echo "ccache location:"
+          command -v ccache
+
+          echo "ccache version:"
+          ccache --version
 
       - name: Restore FoxeClang cache
         id: cache-clang
@@ -374,4 +380,9 @@ jobs:
 
       - name: Show ccache stats
         if: always()
-        run: ccache --show-stats
+        run: |
+          if command -v ccache >/dev/null 2>&1; then
+            ccache --show-stats
+          else
+            echo "::warning::ccache is not installed"
+          fi
