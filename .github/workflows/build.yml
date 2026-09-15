@@ -208,15 +208,29 @@ jobs:
       - name: Verify kernel output
         run: |
           IMAGE="$KERNEL_DIR/out/arch/arm64/boot/Image.gz"
+
           if [[ ! -f "$IMAGE" ]]; then
             echo "::error::Kernel image not found - build may have failed silently"
             exit 1
           fi
+
           echo "Kernel image : $(du -sh "$IMAGE" | cut -f1)"
 
           KERNEL_RELEASE="$(
-            make -C "$KERNEL_DIR" O="$KERNEL_DIR/out"               kernelrelease               ARCH="$ARCH"               LOCALVERSION="$KERNEL_LOCALVERSION"
+            make -s --no-print-directory \
+              -C "$KERNEL_DIR" \
+              O="$KERNEL_DIR/out" \
+              kernelrelease \
+              ARCH="$ARCH" \
+              LOCALVERSION="$KERNEL_LOCALVERSION"
           )"
+
+          KERNEL_RELEASE="$(echo "$KERNEL_RELEASE" | tail -n 1 | tr -d '\r')"
+
+          if [[ -z "$KERNEL_RELEASE" ]]; then
+            echo "::error::Failed to determine kernel release"
+            exit 1
+          fi
 
           echo "Kernel release: $KERNEL_RELEASE"
           echo "KERNEL_RELEASE=$KERNEL_RELEASE" >> "$GITHUB_ENV"
