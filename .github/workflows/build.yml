@@ -96,7 +96,7 @@ jobs:
       - name: Restore FoxeClang cache
         id: cache-clang
         uses: actions/cache@v4
-          with:
+        with:
           path: ${{ env.CLANG_DIR }}
           key: foxe-clang-v23.0-20260822
 
@@ -113,7 +113,7 @@ jobs:
       - name: Restore FoxGCC ARM32 cache
         id: cache-gcc32
         uses: actions/cache@v4
-          with:
+        with:
           path: ${{ env.GCC32_DIR }}
           key: fox-gcc32-v17.0-20260822
 
@@ -145,7 +145,7 @@ jobs:
 
       - name: Restore ccache
         uses: actions/cache@v4
-          with:
+        with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-surya-${{ github.sha }}
           restore-keys: |
@@ -300,14 +300,14 @@ jobs:
 
       - name: Upload kernel ZIP as artifact
         uses: actions/upload-artifact@v4
-          with:
+        with:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_PATH }}
           retention-days: 7
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
-          with:
+        with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: "${{ env.KERNEL_NAME }}-${{ env.DATE_TAG }}"
           body_path: ${{ github.workspace }}/release_notes.md
