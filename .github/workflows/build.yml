@@ -5,24 +5,15 @@ on:
     branches:
       - main
     paths-ignore:
-      - "**.md"
-      - ".gitignore"
+      - '**.md'
+      - '.gitignore'
 
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Custom release tag (leave empty for auto: DDMMYYYY)"
+        description: 'Custom release tag (leave empty for auto: DDMMYYYY)'
         required: false
-        default: ""
-      send_telegram:
-        description: "Send ZIP to Telegram after build?"
-        required: false
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
-
+        default: ''
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -46,18 +37,16 @@ jobs:
       SUBARCH: arm64
       KBUILD_BUILD_HOST: xyz
       KBUILD_BUILD_USER: standalone
-      USE_CCACHE: "1"
+      USE_CCACHE: '1'
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CLANG_DIR: ${{ github.workspace }}/toolchain/clang
       GCC32_DIR: ${{ github.workspace }}/toolchain/gcc32
       AK3_DIR: ${{ github.workspace }}/AnyKernel3
       KERNEL_DIR: ${{ github.workspace }}/kernel-source
       KERNEL_NAME: komo
-      KERNEL_LOCALVERSION: "-komo"
-      TARGET_DEVICE: "Redmi Note 9 Pro (miatoll)"
+      KERNEL_LOCALVERSION: '-komo'
+      TARGET_DEVICE: 'Redmi Note 9 Pro (miatoll)'
       DEFCONFIG: vendor/xiaomi/miatoll_defconfig
-      TG_CHAT_ID: ""
-      TG_THREAD_ID: ""
 
     steps:
       - name: Checkout kernel source
@@ -77,7 +66,34 @@ jobs:
         run: |
           cd "$KERNEL_DIR"
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash
-          
+
+      - name: Verify KernelSU-Next integration
+        run: |
+          set -e
+          cd "$KERNEL_DIR"
+
+          echo "===== KERNELSU FILES ====="
+          find . -type f \
+            \( -path '*kernelsu*' -o -path '*ksu*' \) \
+            -not -path './.git/*' \
+            | head -100
+
+          echo
+          echo "===== KERNELSU CONFIG ====="
+          grep -RniE \
+            'CONFIG_KSU|CONFIG_KSU_DEBUG|CONFIG_KSU_LSM' \
+            drivers security arch/arm64/configs \
+            2>/dev/null | head -100 || true
+
+          echo
+          echo "===== KERNELSU MAKEFILE ====="
+          if [[ -f drivers/kernelsu/Makefile ]]; then
+            cat drivers/kernelsu/Makefile
+          else
+            echo "::error::drivers/kernelsu/Makefile tidak ditemukan"
+            exit 1
+          fi
+
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
@@ -147,7 +163,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-surya-${{ github.sha }}
+          key: ccache-miatoll-${{ github.sha }}
           restore-keys: |
             ccache-miatoll-
             ccache-
@@ -178,6 +194,47 @@ jobs:
           echo "Release tag : ${RELEASE_TAG}"
           echo "Release URL : ${RELEASE_URL}"
 
+      - name: Prepare miatoll defconfig
+        run: |
+          set -euo pipefail
+          cd "$KERNEL_DIR"
+
+          DEFCONFIG_FILE="arch/arm64/configs/$DEFCONFIG"
+
+          if [[ ! -f "$DEFCONFIG_FILE" ]]; then
+            echo "::error::Defconfig tidak ditemukan: $DEFCONFIG_FILE"
+            exit 1
+          fi
+
+          echo "===== ORIGINAL MIATOLL DEFCONFIG ====="
+          grep -nE \
+            '^(CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=|CONFIG_LOCALVERSION_BRANCH_SHA=|# CONFIG_LOCALVERSION_AUTO is not set|# CONFIG_LOCALVERSION_BRANCH_SHA is not set)' \
+            "$DEFCONFIG_FILE" || true
+
+          sed -i \
+            -e '/^CONFIG_LOCALVERSION=/d' \
+            -e '/^CONFIG_LOCALVERSION_AUTO=/d' \
+            -e '/^# CONFIG_LOCALVERSION_AUTO is not set$/d' \
+            -e '/^CONFIG_LOCALVERSION_BRANCH_SHA=/d' \
+            -e '/^# CONFIG_LOCALVERSION_BRANCH_SHA is not set$/d' \
+            "$DEFCONFIG_FILE"
+
+          cat >> "$DEFCONFIG_FILE" <<'EOF'
+
+          CONFIG_LOCALVERSION=""
+          # CONFIG_LOCALVERSION_AUTO is not set
+          # CONFIG_LOCALVERSION_BRANCH_SHA is not set
+          EOF
+
+          echo "===== FINAL MIATOLL DEFCONFIG ====="
+          grep -nE \
+            '^(CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=|CONFIG_LOCALVERSION_BRANCH_SHA=|# CONFIG_LOCALVERSION_AUTO is not set|# CONFIG_LOCALVERSION_BRANCH_SHA is not set)' \
+            "$DEFCONFIG_FILE"
+
+          [[ "$(grep -c '^CONFIG_LOCALVERSION=' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || { echo "::error::CONFIG_LOCALVERSION duplicate/invalid"; exit 1; }
+          [[ "$(grep -cE '^(CONFIG_LOCALVERSION_AUTO=|# CONFIG_LOCALVERSION_AUTO is not set)' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || { echo "::error::CONFIG_LOCALVERSION_AUTO duplicate/invalid"; exit 1; }
+          [[ "$(grep -cE '^(CONFIG_LOCALVERSION_BRANCH_SHA=|# CONFIG_LOCALVERSION_BRANCH_SHA is not set)' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || { echo "::error::CONFIG_LOCALVERSION_BRANCH_SHA duplicate/invalid"; exit 1; }
+
       - name: Build kernel
         run: |
           echo "Device         : $TARGET_DEVICE"
@@ -198,13 +255,35 @@ jobs:
 
           chmod +x "$KERNEL_DIR/buildci.sh"
           cd "$KERNEL_DIR"
-          # Pass LOCALVERSION through the build environment so the resulting
-          # kernel release becomes, for example, 6.1.123-SuperPotato.
+
+          echo
+          echo "===== KERNEL VERSION SOURCE ====="
+          grep -nE '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)' Makefile || true
+
+          echo
+          echo "===== GIT ====="
+          git rev-parse --short=8 HEAD
+          git describe --dirty --always --tags || true
+
+          echo
+          echo "===== BUILD ====="
           LOCALVERSION="$KERNEL_LOCALVERSION" bash buildci.sh
 
           # Catat waktu selesai build (hanya kompilasi, sebelum packaging)
           echo "BUILD_END=$(date +%s)" >> "$GITHUB_ENV"
 
+      - name: Verify KernelSU-Next in final config
+        run: |
+          cd "$KERNEL_DIR"
+
+          echo "===== FINAL KSU CONFIG ====="
+          grep -E \
+            '^(CONFIG_KSU|CONFIG_KSU_DEBUG|CONFIG_KSU_LSM)' \
+            out/.config || true
+
+          echo
+          echo "===== KSU DRIVER ====="
+          find drivers/kernelsu -maxdepth 2 -type f -print 2>/dev/null || true
       - name: Verify kernel output
         run: |
           IMAGE="$KERNEL_DIR/out/arch/arm64/boot/Image.gz"
@@ -233,6 +312,22 @@ jobs:
           fi
 
           echo "Kernel release: $KERNEL_RELEASE"
+
+          echo
+          echo "===== FINAL CONFIG LOCALVERSION ====="
+          grep -E '^(CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=|CONFIG_LOCALVERSION_BRANCH_SHA=)' \
+            "$KERNEL_DIR/out/.config" || true
+
+          echo
+          echo "===== FINAL KERNEL RELEASE FILE ====="
+          cat "$KERNEL_DIR/out/include/config/kernel.release" 2>/dev/null || true
+
+          echo
+          echo "===== VERSION FILES ====="
+          find "$KERNEL_DIR/out" -maxdepth 3 -type f \
+            \( -name '.scmversion' -o -name 'kernel.release' \) \
+            -print -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \; 2>/dev/null || true
+
           echo "KERNEL_RELEASE=$KERNEL_RELEASE" >> "$GITHUB_ENV"
 
       - name: Clone AnyKernel3
@@ -306,10 +401,8 @@ jobs:
           | Size      | ${ZIP_SIZE}              |
 
           ---
-          Built by [Michikoextv2](https://github.com/Michikoextv2)
           EOF
 
-          # Export Telegram
           echo "BUILD_DURATION=${BUILD_DURATION}" >> "$GITHUB_ENV"
 
       - name: Upload kernel ZIP as artifact
@@ -323,65 +416,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: "${{ env.KERNEL_NAME }}-${{ env.DATE_TAG }}"
+          name: '${{ env.KERNEL_NAME }}-${{ env.DATE_TAG }}'
           body_path: ${{ github.workspace }}/release_notes.md
           files: ${{ env.ZIP_PATH }}
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Send to Telegram
-        if: ${{ github.event.inputs.send_telegram != 'false' }}
-        env:
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-        run: |
-          echo "Sending to Telegram..."
-          echo "Release URL : ${RELEASE_URL}"
-
-          python3 - <<'PYEOF'
-          import os, sys, requests
-
-          token     = os.environ["TG_BOT_TOKEN"]
-          chat_id   = os.environ["TG_CHAT_ID"]
-          thread_id = os.environ["TG_THREAD_ID"]
-          zip_path  = os.environ["ZIP_PATH"]
-
-          caption = (
-              "✅ Build Completed\n"
-              "\n"
-              "Device   : {TARGET_DEVICE}\n"
-              "Duration : {BUILD_DURATION}\n"
-              "Size     : {ZIP_SIZE}\n"
-              "Release  : {RELEASE_URL}"
-          ).format(
-              TARGET_DEVICE  = os.environ["TARGET_DEVICE"],
-              BUILD_DURATION = os.environ["BUILD_DURATION"],
-              ZIP_SIZE       = os.environ["ZIP_SIZE"],
-              RELEASE_URL    = os.environ["RELEASE_URL"],
-          )
-
-          url = f"https://api.telegram.org/bot{token}/sendDocument"
-
-          with open(zip_path, "rb") as f:
-              resp = requests.post(
-                  url,
-                  data={
-                      "chat_id"           : chat_id,
-                      "message_thread_id" : thread_id,
-                      "caption"           : caption,
-                  },
-                  files={"document": (os.path.basename(zip_path), f, "application/zip")},
-                  timeout=300,
-              )
-
-          print(f"HTTP status : {resp.status_code}")
-          print(resp.text)
-
-          if resp.status_code != 200:
-              print(f"::error::Telegram API returned HTTP {resp.status_code}", file=sys.stderr)
-              sys.exit(1)
-          PYEOF
 
       - name: Show ccache stats
         if: always()
