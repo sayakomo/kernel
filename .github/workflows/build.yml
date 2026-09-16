@@ -69,30 +69,91 @@ jobs:
 
       - name: Verify KernelSU-Next integration
         run: |
-          set -e
+          set -euo pipefail
           cd "$KERNEL_DIR"
 
-          echo "===== KERNELSU FILES ====="
-          find . -type f \
-            \( -path '*kernelsu*' -o -path '*ksu*' \) \
-            -not -path './.git/*' \
-            | head -100
+          echo "===== KERNELSU REPOSITORY ====="
+
+          if [[ ! -d "KernelSU-Next/kernel" ]]; then
+            echo "::error::KernelSU-Next/kernel tidak ditemukan"
+            exit 1
+          fi
+
+          echo "KernelSU-Next/kernel:"
+          ls -la KernelSU-Next/kernel
 
           echo
-          echo "===== KERNELSU CONFIG ====="
+          echo "===== KERNELSU SOURCE ====="
+
+          find KernelSU-Next/kernel \
+            -maxdepth 3 \
+            -type f \
+            -print | sed -n '1,150p'
+
+          echo
+          echo "===== KERNELSU DRIVER LINK ====="
+
+          if [[ -L "drivers/kernelsu" ]]; then
+            echo "drivers/kernelsu is a symlink"
+
+            echo "Target:"
+            readlink "drivers/kernelsu"
+
+            echo "Resolved:"
+            readlink -f "drivers/kernelsu"
+          else
+            echo "::error::drivers/kernelsu symlink tidak ditemukan"
+            ls -la drivers/ | sed -n '1,120p'
+            exit 1
+          fi
+
+          echo
+          echo "===== KERNELSU MAKEFILE ENTRY ====="
+
+          if grep -nF 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile; then
+            echo "KernelSU Makefile integration: OK"
+          else
+            echo "::error::KernelSU belum ditambahkan ke drivers/Makefile"
+            exit 1
+          fi
+
+          echo
+          echo "===== KERNELSU KCONFIG ENTRY ====="
+
+          if grep -nF 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig; then
+            echo "KernelSU Kconfig integration: OK"
+          else
+            echo "::error::KernelSU belum ditambahkan ke drivers/Kconfig"
+            exit 1
+          fi
+
+          echo
+          echo "===== KERNELSU CONFIG REFERENCES ====="
+
           grep -RniE \
             'CONFIG_KSU|CONFIG_KSU_DEBUG|CONFIG_KSU_LSM' \
             drivers security arch/arm64/configs \
-            2>/dev/null | head -100 || true
+            2>/dev/null \
+            | sed -n '1,150p' || true
 
           echo
-          echo "===== KERNELSU MAKEFILE ====="
-          if [[ -f drivers/kernelsu/Makefile ]]; then
-            cat drivers/kernelsu/Makefile
-          else
-            echo "::error::drivers/kernelsu/Makefile tidak ditemukan"
-            exit 1
-          fi
+          echo "===== KERNELSU STATUS ====="
+
+          cd KernelSU-Next
+
+          echo "Commit:"
+          git rev-parse --short=12 HEAD
+
+          echo "Branch:"
+          git branch --show-current || true
+
+          echo "Description:"
+          git describe --always --dirty --tags || true
+
+          cd "$KERNEL_DIR"
+
+          echo
+          echo "===== KERNELSU INTEGRATION: OK ====="
 
       - name: Install build dependencies
         run: |
@@ -234,6 +295,33 @@ jobs:
           [[ "$(grep -c '^CONFIG_LOCALVERSION=' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || { echo "::error::CONFIG_LOCALVERSION duplicate/invalid"; exit 1; }
           [[ "$(grep -cE '^(CONFIG_LOCALVERSION_AUTO=|# CONFIG_LOCALVERSION_AUTO is not set)' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || { echo "::error::CONFIG_LOCALVERSION_AUTO duplicate/invalid"; exit 1; }
           [[ "$(grep -cE '^(CONFIG_LOCALVERSION_BRANCH_SHA=|# CONFIG_LOCALVERSION_BRANCH_SHA is not set)' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || { echo "::error::CONFIG_LOCALVERSION_BRANCH_SHA duplicate/invalid"; exit 1; }
+
+      - name: Configure kernel
+        run: |
+          set -euo pipefail
+          cd "$KERNEL_DIR"
+
+          echo "===== RUNNING DEFCONFIG ====="
+
+          make \
+            O="$KERNEL_DIR/out" \
+            ARCH="$ARCH" \
+            "$DEFCONFIG"
+
+          echo
+          echo "===== KERNELSU CONFIG AFTER DEFCONFIG ====="
+
+          grep -E \
+            '^(CONFIG_KSU=|CONFIG_KSU_DEBUG=|CONFIG_KSU_LSM=|# CONFIG_KSU)' \
+            out/.config || true
+
+          echo
+          echo "===== KERNELSU KCONFIG ====="
+
+          grep -RniE \
+            '^(config KSU|menuconfig KSU)' \
+            drivers/kernelsu \
+            2>/dev/null || true
 
       - name: Build kernel
         run: |
