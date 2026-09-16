@@ -423,6 +423,8 @@ jobs:
 
       - name: Build kernel
         run: |
+          set -o pipefail
+
           echo "Device         : $TARGET_DEVICE"
           echo "Defconfig      : $DEFCONFIG"
           echo "Kernel name    : $KERNEL_NAME"
@@ -431,19 +433,16 @@ jobs:
 
           if [[ ! -f "$KERNEL_DIR/buildci.sh" ]]; then
             echo "::error::buildci.sh tidak ditemukan di $KERNEL_DIR"
-            echo "--- Isi direktori kernel-source ---"
-            ls -la "$KERNEL_DIR"
             exit 1
           fi
 
-          # Catat waktu mulai build
           echo "BUILD_START=$(date +%s)" >> "$GITHUB_ENV"
 
           chmod +x "$KERNEL_DIR/buildci.sh"
           cd "$KERNEL_DIR"
 
           echo
-          echo "===== KERNEL VERSION SOURCE ====="
+          echo "===== VERSION ====="
           grep -nE '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)' Makefile || true
 
           echo
@@ -452,11 +451,48 @@ jobs:
           git describe --dirty --always --tags || true
 
           echo
-          echo "===== BUILD ====="
-          LOCALVERSION="$KERNEL_LOCALVERSION" bash buildci.sh
+          echo "===== CONFIG ====="
+          grep -E \
+            '^(CONFIG_KPROBES|CONFIG_KSU|CONFIG_KSU_TAMPER_SYSCALL_TABLE|CONFIG_KSU_SUSFS|CONFIG_KSU_EXTRAS|CONFIG_KALLSYMS|CONFIG_KALLSYMS_ALL|CONFIG_KALLSYMS_BASE_RELATIVE)=' \
+            out/.config || true
 
-          # Catat waktu selesai build (hanya kompilasi, sebelum packaging)
+          echo
+          echo "===== BUILD ====="
+
+          set +e
+
+          LOCALVERSION="$KERNEL_LOCALVERSION" \
+            bash buildci.sh 2>&1 | tee "$GITHUB_WORKSPACE/kernel-build.log"
+
+          BUILD_EXIT=${PIPESTATUS[0]}
+
+          set -e
+
+          echo
+          echo "===== BUILD EXIT CODE ====="
+          echo "buildci.sh exit code: $BUILD_EXIT"
+
+          if [[ "$BUILD_EXIT" -ne 0 ]]; then
+            echo
+            echo "===== LAST 200 BUILD LOG LINES ====="
+            tail -n 200 "$GITHUB_WORKSPACE/kernel-build.log"
+
+            echo
+            echo "===== COMPILER ERRORS ====="
+            grep -nEi \
+              'error:|fatal error:|undefined reference|implicit declaration|No such file|not found|No rule to make target|recipe for target|FAILED' \
+              "$GITHUB_WORKSPACE/kernel-build.log" \
+              | tail -n 100 || true
+
+            echo
+            echo "::error::Kernel build failed with exit code $BUILD_EXIT"
+            exit "$BUILD_EXIT"
+          fi
+
           echo "BUILD_END=$(date +%s)" >> "$GITHUB_ENV"
+
+          echo
+          echo "===== BUILD SUCCESS ====="
 
       - name: Verify KernelSU-Next in final config
         run: |
