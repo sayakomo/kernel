@@ -213,7 +213,7 @@ jobs:
           fi
           echo "Clang  : $("$CLANG_DIR/bin/clang" --version | head -n1)"
 
-          GCC32_BIN=$(find "$GCC32_DIR" -name "arm-eabi-gcc" -type f | head -1)
+          GCC32_BIN=$(find "$GCC32_DIR" -name "arm-eabi-gcc" -type f -print -quit)
           if [[ -z "$GCC32_BIN" ]]; then
             echo "::warning::arm-eabi-gcc not found in $GCC32_DIR"
           else
@@ -269,9 +269,13 @@ jobs:
 
           echo "===== ORIGINAL MIATOLL DEFCONFIG ====="
           grep -nE \
-            '^(CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=|CONFIG_LOCALVERSION_BRANCH_SHA=|# CONFIG_LOCALVERSION_AUTO is not set|# CONFIG_LOCALVERSION_BRANCH_SHA is not set)' \
+            '^(CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=|CONFIG_LOCALVERSION_BRANCH_SHA=|# CONFIG_LOCALVERSION_AUTO is not set|# CONFIG_LOCALVERSION_BRANCH_SHA is not set|CONFIG_KSU=|CONFIG_KSU_TAMPER_SYSCALL_TABLE=|CONFIG_KSU_SUSFS=|CONFIG_KSU_EXTRAS=|CONFIG_KALLSYMS=|CONFIG_KALLSYMS_ALL=|KALLSYMS_ALL=)' \
             "$DEFCONFIG_FILE" || true
 
+          echo
+          echo "===== NORMALIZING MIATOLL DEFCONFIG ====="
+
+          # Remove duplicate/old localversion entries.
           sed -i \
             -e '/^CONFIG_LOCALVERSION=/d' \
             -e '/^CONFIG_LOCALVERSION_AUTO=/d' \
@@ -280,21 +284,60 @@ jobs:
             -e '/^# CONFIG_LOCALVERSION_BRANCH_SHA is not set$/d' \
             "$DEFCONFIG_FILE"
 
+          # Normalize malformed KALLSYMS_ALL entry.
+          sed -i 's/^KALLSYMS_ALL=/CONFIG_KALLSYMS_ALL=/' "$DEFCONFIG_FILE"
+
+          # Remove existing KSU enable line so the final state is deterministic.
+          sed -i \
+            -e '/^CONFIG_KSU=/d' \
+            -e '/^# CONFIG_KSU is not set$/d' \
+            "$DEFCONFIG_FILE"
+
           cat >> "$DEFCONFIG_FILE" <<'EOF'
 
           CONFIG_LOCALVERSION=""
           # CONFIG_LOCALVERSION_AUTO is not set
           # CONFIG_LOCALVERSION_BRANCH_SHA is not set
+          CONFIG_KSU=y
           EOF
 
+          echo
           echo "===== FINAL MIATOLL DEFCONFIG ====="
           grep -nE \
-            '^(CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=|CONFIG_LOCALVERSION_BRANCH_SHA=|# CONFIG_LOCALVERSION_AUTO is not set|# CONFIG_LOCALVERSION_BRANCH_SHA is not set)' \
+            '^(CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=|CONFIG_LOCALVERSION_BRANCH_SHA=|# CONFIG_LOCALVERSION_AUTO is not set|# CONFIG_LOCALVERSION_BRANCH_SHA is not set|CONFIG_KSU=|CONFIG_KSU_TAMPER_SYSCALL_TABLE=|CONFIG_KSU_SUSFS=|CONFIG_KSU_EXTRAS=|CONFIG_KALLSYMS=|CONFIG_KALLSYMS_ALL=|KALLSYMS_ALL=)' \
             "$DEFCONFIG_FILE"
 
-          [[ "$(grep -c '^CONFIG_LOCALVERSION=' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || { echo "::error::CONFIG_LOCALVERSION duplicate/invalid"; exit 1; }
-          [[ "$(grep -cE '^(CONFIG_LOCALVERSION_AUTO=|# CONFIG_LOCALVERSION_AUTO is not set)' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || { echo "::error::CONFIG_LOCALVERSION_AUTO duplicate/invalid"; exit 1; }
-          [[ "$(grep -cE '^(CONFIG_LOCALVERSION_BRANCH_SHA=|# CONFIG_LOCALVERSION_BRANCH_SHA is not set)' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || { echo "::error::CONFIG_LOCALVERSION_BRANCH_SHA duplicate/invalid"; exit 1; }
+          # Exactly one localversion state must exist.
+          [[ "$(grep -c '^CONFIG_LOCALVERSION=' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || {
+            echo "::error::CONFIG_LOCALVERSION duplicate/invalid"
+            exit 1
+          }
+
+          [[ "$(grep -cE '^(# CONFIG_LOCALVERSION_AUTO is not set|CONFIG_LOCALVERSION_AUTO=)' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || {
+            echo "::error::CONFIG_LOCALVERSION_AUTO duplicate/invalid"
+            exit 1
+          }
+
+          [[ "$(grep -cE '^(# CONFIG_LOCALVERSION_BRANCH_SHA is not set|CONFIG_LOCALVERSION_BRANCH_SHA=)' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || {
+            echo "::error::CONFIG_LOCALVERSION_BRANCH_SHA duplicate/invalid"
+            exit 1
+          }
+
+          [[ "$(grep -c '^CONFIG_KSU=y$' "$DEFCONFIG_FILE" || true)" -eq 1 ]] || {
+            echo "::error::CONFIG_KSU=y missing/duplicate"
+            exit 1
+          }
+
+          if grep -qE '^KALLSYMS_ALL=' "$DEFCONFIG_FILE"; then
+            echo "::error::Malformed KALLSYMS_ALL entry remains"
+            exit 1
+          fi
+
+          if grep -qE '^CONFIG_KALLSYMS_ALL=y$' "$DEFCONFIG_FILE"; then
+            echo "CONFIG_KALLSYMS_ALL=y: present"
+          else
+            echo "::warning::CONFIG_KALLSYMS_ALL=y not present in source defconfig"
+          fi
 
       - name: Configure kernel
         run: |
@@ -309,11 +352,50 @@ jobs:
             "$DEFCONFIG"
 
           echo
-          echo "===== KERNELSU CONFIG AFTER DEFCONFIG ====="
+          echo "===== KERNEL CONFIG AFTER DEFCONFIG ====="
 
-          grep -E \
-            '^(CONFIG_KSU=|CONFIG_KSU_DEBUG=|CONFIG_KSU_LSM=|# CONFIG_KSU)' \
-            out/.config || true
+          for cfg in \
+            CONFIG_KSU \
+            CONFIG_KSU_TAMPER_SYSCALL_TABLE \
+            CONFIG_KSU_SUSFS \
+            CONFIG_KSU_EXTRAS \
+            CONFIG_KALLSYMS \
+            CONFIG_KALLSYMS_ALL \
+            CONFIG_KALLSYMS_BASE_RELATIVE
+          do
+            value="$(grep -E "^${cfg}=" out/.config | tail -n 1 || true)"
+            echo "${cfg}: ${value:-not set}"
+          done
+
+          echo
+          echo "===== VERIFY REQUIRED CONFIG ====="
+
+          grep -q '^CONFIG_KSU=y$' out/.config || {
+            echo "::error::CONFIG_KSU=y tidak aktif setelah defconfig"
+            exit 1
+          }
+
+          grep -q '^CONFIG_LOCALVERSION=""$' out/.config || {
+            echo "::error::CONFIG_LOCALVERSION bukan empty setelah defconfig"
+            exit 1
+          }
+
+          if grep -q '^CONFIG_LOCALVERSION_AUTO=y$' out/.config; then
+            echo "::error::CONFIG_LOCALVERSION_AUTO aktif"
+            exit 1
+          fi
+
+          if grep -q '^CONFIG_LOCALVERSION_BRANCH_SHA=y$' out/.config; then
+            echo "::error::CONFIG_LOCALVERSION_BRANCH_SHA aktif"
+            exit 1
+          fi
+
+          grep -q '^CONFIG_KALLSYMS=y$' out/.config || {
+            echo "::error::CONFIG_KALLSYMS=y tidak aktif"
+            exit 1
+          }
+
+          echo "Required configuration: OK"
 
           echo
           echo "===== KERNELSU KCONFIG ====="
@@ -321,7 +403,8 @@ jobs:
           grep -RniE \
             '^(config KSU|menuconfig KSU)' \
             drivers/kernelsu \
-            2>/dev/null || true
+            2>/dev/null \
+            | sed -n '1,100p' || true
 
       - name: Build kernel
         run: |
@@ -383,16 +466,19 @@ jobs:
 
           echo "Kernel image : $(du -sh "$IMAGE" | cut -f1)"
 
+          echo "===== KERNEL RELEASE ====="
+
           KERNEL_RELEASE="$(
             make -s --no-print-directory \
               -C "$KERNEL_DIR" \
               O="$KERNEL_DIR/out" \
-              kernelrelease \
               ARCH="$ARCH" \
-              LOCALVERSION="$KERNEL_LOCALVERSION"
+              LOCALVERSION="$KERNEL_LOCALVERSION" \
+              kernelrelease \
+              2>/dev/null \
+              | tail -n 1 \
+              | tr -d '\r'
           )"
-
-          KERNEL_RELEASE="$(echo "$KERNEL_RELEASE" | tail -n 1 | tr -d '\r')"
 
           if [[ -z "$KERNEL_RELEASE" ]]; then
             echo "::error::Failed to determine kernel release"
@@ -408,13 +494,27 @@ jobs:
 
           echo
           echo "===== FINAL KERNEL RELEASE FILE ====="
-          cat "$KERNEL_DIR/out/include/config/kernel.release" 2>/dev/null || true
+          if [[ -f "$KERNEL_DIR/out/include/config/kernel.release" ]]; then
+            cat "$KERNEL_DIR/out/include/config/kernel.release"
+          else
+            echo "::warning::out/include/config/kernel.release tidak ditemukan"
+          fi
 
           echo
           echo "===== VERSION FILES ====="
           find "$KERNEL_DIR/out" -maxdepth 3 -type f \
             \( -name '.scmversion' -o -name 'kernel.release' \) \
-            -print -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \; 2>/dev/null || true
+            -print \
+            | sed -n '1,100p' || true
+
+          echo
+          echo "===== RELEASE DIAGNOSTICS ====="
+          echo "Expected base + localversion: 4.14.357-komo"
+          echo "Actual kernel release       : $KERNEL_RELEASE"
+
+          if [[ "$KERNEL_RELEASE" != "4.14.357-komo" ]]; then
+            echo "::warning::Kernel release differs from expected 4.14.357-komo"
+          fi
 
           echo "KERNEL_RELEASE=$KERNEL_RELEASE" >> "$GITHUB_ENV"
 
